@@ -163,12 +163,21 @@ rigorous playtest pass — expect to keep adjusting them.
   templates (1.2GB) were downloaded and installed, and `export_presets.cfg`
   configures a thread-free "Web" preset (threads need COOP/COEP headers
   most static hosts don't send by default, so they're disabled for
-  portability). Verified by serving the build locally and playing a shot
-  through the actual browser/WASM pipeline, not just exporting without
-  errors. The engine `.wasm` is ~39MB uncompressed / ~10MB zipped — too
-  large for Claude's own Artifact hosting (16MB per-file cap), so the build
-  is handed off as a zip for you to host (GitHub Pages, itch.io, Netlify,
-  your own server, etc.), not a direct Claude link.
+  portability). The engine `.wasm` is ~39MB uncompressed — too large for
+  Claude's own Artifact hosting (16MB per-file cap) or Netlify Drop's
+  anonymous-upload cap, and Netlify Drop's unclaimed links expire in an
+  hour and sit behind a password besides, so neither was usable for a
+  lasting link.
+- **Deployed to GitHub Pages instead**: the repo at
+  https://github.com/patricktudesign-droid/one-more-putt serves the web
+  build from `docs/` on `main`, live at
+  https://patricktudesign-droid.github.io/one-more-putt/. One gotcha hit
+  along the way: GitHub Pages' legacy builder runs everything through
+  Jekyll by default, which failed outright on the raw WASM/JS output
+  ("Page build failed", no detail) — fixed with an empty `docs/.nojekyll`
+  file, which tells Pages to serve the folder as-is. Verified live by
+  loading the page and actually dragging/releasing a shot through the
+  real deployed site, not just checking it returns HTTP 200.
 
 ## Remaining asset needs
 

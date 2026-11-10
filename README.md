@@ -1,5 +1,9 @@
 # One More Putt — Milestone A/B/C Prototype
 
+**Play it live:** https://patricktudesign-droid.github.io/one-more-putt/
+(repo: https://github.com/patricktudesign-droid/one-more-putt — web build
+auto-lives in `docs/`, served by GitHub Pages)
+
 A pocket-sized golf puzzle prototype built in Godot 4.x / GDScript, per
 `One_More_Putt_Prototype_Brief.html`. Five holes, drag-to-aim putting,
 automatic sand chips, undo/restart, stars, local best scores.
