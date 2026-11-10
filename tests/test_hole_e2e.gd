@@ -109,14 +109,19 @@ func _check_full_completion(main: Node) -> void:
 		if hole.sim.completed:
 			break
 	_check("full-power straight putt sinks hole 1", hole.sim.completed)
+	# Completion panel is deliberately delayed by the sink animation.
+	for i in range(60):
+		await process_frame
+		if hole.completion_panel.visible:
+			break
 	_check("completion panel shown", hole.completion_panel.visible)
 	var save_node: Node = get_root().get_node("Save")
 	_check("best score saved", save_node.get_best(0) >= 0)
 
 func _check_chip_via_input(main: Node) -> void:
 	main.show_hole(2) # "Out of the sand": starts in sand, needs a chip
-	await process_frame
-	await process_frame
+	for i in range(8):
+		await process_frame
 	var hole = main.get_child(0)
 	_check("hole 3 starts in CHIP mode", hole.sim.mode == BallSim.Mode.CHIP)
 	var ball_screen: Vector2 = hole.course_root.to_global(hole.sim.position)

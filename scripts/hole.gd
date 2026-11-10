@@ -36,7 +36,7 @@ var completion_panel: Control
 var completion_title: Label
 var completion_strokes: Label
 var completion_term: Label
-var completion_stars: Label
+var completion_stars: Control
 
 var undo_stack: Array = []
 var is_dragging: bool = false
@@ -222,11 +222,9 @@ func _build_completion_panel() -> void:
 	completion_term.custom_minimum_size = Vector2(280, 0)
 	card.add_child(completion_term)
 
-	completion_stars = Label.new()
-	completion_stars.add_theme_font_size_override("font_size", 30)
-	completion_stars.add_theme_color_override("font_color", Color("EF846C"))
-	completion_stars.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	completion_stars.custom_minimum_size = Vector2(280, 0)
+	completion_stars = Control.new()
+	completion_stars.set_script(load("res://scripts/star_row.gd"))
+	completion_stars.custom_minimum_size = Vector2(280, 22)
 	card.add_child(completion_stars)
 
 	var spacer := Control.new()
@@ -337,18 +335,23 @@ func _handle_blocked_landing() -> void:
 	_show_toast("Blocked landing")
 	Sound.play_wall()
 
+const SINK_ANIMATION_DURATION := 0.4
+
 func _handle_hole_complete() -> void:
 	if sim.strokes == 1:
 		Sound.play_hole_in_one()
 	else:
 		Sound.play_cup()
 	Save.record_completion(hole_index, sim.strokes)
+	course_view.play_sink_animation(SINK_ANIMATION_DURATION)
+	await get_tree().create_timer(SINK_ANIMATION_DURATION).timeout
+
 	var stars: int = _stars_for(sim.strokes, level.target)
 	var is_last: bool = hole_index == LevelData.holes().size() - 1
 	completion_title.text = "Prototype complete" if is_last else "Hole complete"
 	completion_strokes.text = "%d stroke%s (par %d)" % [sim.strokes, "" if sim.strokes == 1 else "s", level.target]
 	completion_term.text = _golf_term(sim.strokes, level.target)
-	completion_stars.text = "★".repeat(stars) + "☆".repeat(3 - stars)
+	completion_stars.set_stars(stars)
 	var next_btn: Button = completion_panel.find_child("NextButton", true, false)
 	if next_btn:
 		next_btn.visible = not is_last
@@ -513,6 +516,7 @@ func _on_restart_pressed() -> void:
 	sim.reset()
 	undo_stack.clear()
 	completion_panel.visible = false
+	course_view.reset_sink()
 	_cancel_aim()
 	_refresh_hud()
 

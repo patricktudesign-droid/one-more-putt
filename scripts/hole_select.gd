@@ -61,10 +61,18 @@ func _build_row(index: int) -> Control:
 	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	var best: int = Save.get_best(index)
 	var best_text: String = "best %d" % best if best >= 0 else "not played"
-	var stars_text: String = ""
+	btn.text = "Hole %d — %s\nTarget %d · %s" % [index + 1, lvl.name, lvl.target, best_text]
+	btn.pressed.connect(func(): hole_chosen.emit(index))
+
 	if best >= 0:
 		var stars: int = 3 if best <= lvl.target else (2 if best == lvl.target + 1 else 1)
-		stars_text = "  " + "★".repeat(stars)
-	btn.text = "Hole %d — %s\nTarget %d · %s%s" % [index + 1, lvl.name, lvl.target, best_text, stars_text]
-	btn.pressed.connect(func(): hole_chosen.emit(index))
+		var star_row := Control.new()
+		star_row.set_script(load("res://scripts/star_row.gd"))
+		star_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		star_row.set_anchors_and_offsets_preset(Control.PRESET_CENTER_RIGHT)
+		star_row.offset_left = -96
+		star_row.offset_right = -12
+		btn.add_child(star_row)
+		star_row.set_stars(stars)
+
 	return btn

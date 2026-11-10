@@ -49,6 +49,115 @@ score saved, and a chip shot fired the same way clears the sand on hole 3.
   first shot. Fixed to compute `in_sand`/`mode` from the actual start
   position; added a regression check for it.
 
+## Outer-wall collision bug (2026-11-10, from a gameplay recording)
+
+**Symptom** (confirmed by scrubbing the submitted recording frame-by-frame
+from 3.8s–5.3s): a putt on hole 2 reaches the right outer boundary around
+4.5s and sits frozen there — no visible rebound, for as long as recorded.
+
+**Root cause**: in `_step_rolling` (`ball_sim.gd`), the outer-wall branch
+checked `_outer_blocked(tentative)` (the about-to-move-to position —
+correctly detects the breach) but then derived the bounce normal from
+`_outer_normal(position)` — the *current*, still-legitimately-inside-bounds
+position. `_outer_normal`'s four checks are the same threshold tests as
+`_outer_blocked`, so run against a position that hasn't crossed anything,
+none of them fire, and the function falls through to its fallback:
+`return Vector2.UP`. `Vector2.UP` is `(0, -1)` in Godot's 2D convention — a
+*horizontal*-surface normal. `velocity.bounce(Vector2.UP)` only flips the Y
+component; the real offending component (X, for a left/right wall) passes
+through completely untouched. Since X velocity never reverses, every
+subsequent substep recomputes the same blocked `tentative`, so `position`
+never advances (the branch that assigns `position = tentative` is skipped
+every time) — the ball is permanently re-colliding with itself at the same
+point, frozen, while only the Y component visibly jitters and decays under
+repeated `* WALL_RESTITUTION`. This is why only the **left/right** walls
+were affected: a vertical (top/bottom) collision happens to need exactly a
+vertical normal, so the wrong fallback is accidentally harmless there —
+confirmed by reverting the fix and rerunning the test matrix below, which
+failed only the right/left cases (16 of them), never top/bottom.
+
+Internal (low) walls were never affected — `circle_rect_normal` computes
+a proper closest-point projection, which is correct regardless of whether
+the queried point has already crossed the rect, unlike `_outer_normal`'s
+threshold branching.
+
+**Fix**: one line, `hit_normal = _outer_normal(tentative)` instead of
+`_outer_normal(position)` (`ball_sim.gd`, in `_step_rolling`'s outer-wall
+branch). No tuning values were touched to fix this — it was a pure logic
+bug, independent of restitution/decel/margin constants.
+
+**What was actually tested** (`test_outer_wall_rebound_matrix` in
+`test_ball_sim.gd`, 36 checks): for each of the 4 outer edges (right,
+left, top, bottom) × head-on and shallow-angle (~20° off the wall) × low/
+medium/high speed (150/400/650 units/s) — 24 combinations — plus a
+bottom-right corner case, asserts: the ball actually rebounds, is pushed
+back inward (correct sign, not just any motion), moves measurably after
+the rebound (not frozen), never penetrates the boundary at any tick
+afterward, and settles within a bounded tick count (catches the original
+"never reaches RESTING, jitters forever" failure mode directly). For the
+shallow-angle cases specifically, it also asserts the along-the-wall
+(tangential) velocity component keeps its original sign — i.e. a grazing
+hit keeps sliding the same way, rather than the bounce flipping or
+cancelling it. Verified the matrix is non-vacuous by reverting the fix and
+confirming it fails exactly the 16 left/right cases predicted by the root
+cause above, then restoring the fix and confirming all 161 unit checks
+(including this matrix) pass. Also replayed an equivalent hard rightward
+shot on hole 2 in the actual running game (not just the isolated
+simulation) and confirmed visually that the ball now rebounds well clear
+of the wall instead of sticking.
+
+## Rolling deceleration / stopping-threshold check (2026-11-10)
+
+Per the request to re-tune these only after collisions were confirmed
+solid: measured actual travel distance, settle time, and a tick-by-tick
+position-delta trace for the last 20 ticks before resting, across low/
+medium/high power (30%/60%/100% of max speed). Result: perfectly smooth,
+monotonically-decreasing deltas down to exactly 0.0 with no reversals or
+jitter; travel distances (52 / 203 / 227* units — *high power triggers a
+real wall bounce partway, which is correct) feel proportionate to the
+320x480 course. No further change made to `PUTT_DECEL` or
+`REST_SPEED_THRESHOLD`/`REST_TIME_REQUIRED` — the values already set in
+the previous round (in response to "stops too fast") check out, and most
+of what read as "broken rolling" before was very likely the outer-wall
+freeze above making ordinary medium/hard putts look stuck.
+
+## Visual polish (2026-11-10)
+
+- **Softly shaded ball**: a darker offset underlay circle (suggesting the
+  side away from the light) plus a small fixed highlight dot (a stable
+  implied light source, independent of the ball's own spin) replace the
+  previous flat fill + thin outline.
+- **Travel-driven rolling texture**: `BallSim.rotation` accumulates
+  `distance_moved / BALL_RADIUS` (arc length / radius, i.e. rolling
+  without slipping) every tick the ball actually advances — both while
+  rolling and during a chip's ground-position interpolation. `course_view`
+  draws three small dimples rotated by this angle (the fixed highlight
+  above is drawn separately, in world space, so it does *not* spin with
+  the ball — that would look wrong for a fixed light source).
+- **Chip ground shadow**: now shrinks *and* fades with height (was scale-
+  only, and barely shrank), a clearer "how high is it right now" cue.
+- **Recessed cup**: a worn-turf rim ring, a dark bowl, and an inner shadow
+  crescent offset toward the bottom-right (away from the same implied
+  top-left light as the ball), instead of one flat solid disc.
+- **Sink animation**: on hole completion, `course_view.play_sink_animation()`
+  tweens the ball down to nothing over 0.4s (shrinking in place) before the
+  completion panel appears, instead of an instant cut. `hole.gd`'s
+  `_handle_hole_complete` now awaits that duration before populating/
+  showing the panel; the end-to-end test was updated to wait for the panel
+  rather than asserting it's visible the instant `sim.completed` flips.
+- **Star graphics**: replaced the Unicode "★"/"☆" `Label` text (reported
+  broken — almost certainly missing glyph coverage in whatever font the
+  engine/export resolves to, a known risk with relying on Unicode symbol
+  characters rather than drawn shapes) with `star_row.gd`, a small Control
+  that draws real 5-point star polygons (filled coral for earned, outlined
+  pale for unearned). Used on both the hole-completion panel and the
+  hole-select screen's best-score rows (same underlying bug, same fix).
+
+Verified all five visually: rendered a static hole (ball shading + dimples
++ recessed cup), captured a mid-sink-animation frame and the final
+completion panel (stars + golf term together), and the hole-select
+screen's per-row stars at two different scores.
+
 ## Explicit interpretation calls (brief was ambiguous or silent)
 
 The brief asked unknowns to be flagged rather than silently guessed. These

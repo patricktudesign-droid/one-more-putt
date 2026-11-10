@@ -29,6 +29,11 @@ var rest_timer: float = 0.0
 var strokes: int = 0
 var completed: bool = false
 
+# Purely cosmetic: a 2D spin angle driven by ground distance travelled
+# (arc length / radius, as if rolling without slipping), so the view layer
+# can draw a visibly rotating ball instead of a sliding disc.
+var rotation: float = 0.0
+
 # Chip flight bookkeeping
 var flight_t: float = 0.0
 var flight_start: Vector2
@@ -54,6 +59,7 @@ func reset() -> void:
 	strokes = 0
 	completed = false
 	flight_t = 0.0
+	rotation = 0.0
 
 func can_shoot() -> bool:
 	return state == State.RESTING and not completed
@@ -243,7 +249,7 @@ func _step_rolling(delta: float, events: Dictionary) -> void:
 
 		var hit_normal: Vector2 = Vector2.ZERO
 		if _outer_blocked(tentative):
-			hit_normal = _outer_normal(position)
+			hit_normal = _outer_normal(tentative)
 		else:
 			for w in walls:
 				if circle_rect_overlap(tentative, Constants.BALL_RADIUS + Constants.WALL_COLLISION_MARGIN, w):
@@ -254,6 +260,7 @@ func _step_rolling(delta: float, events: Dictionary) -> void:
 			velocity = velocity.bounce(hit_normal) * Constants.WALL_RESTITUTION
 			events.bounced = true
 		else:
+			rotation += step_dist / Constants.BALL_RADIUS
 			position = tentative
 
 		# Constant (non frame-dependent) linear deceleration, applied per substep.
@@ -287,6 +294,7 @@ func _step_flight(delta: float, events: Dictionary) -> void:
 		_resolve_landing(flight_target, events)
 		return
 
+	rotation += position.distance_to(tentative_ground) / Constants.BALL_RADIUS
 	flight_t = tentative_t
 	position = tentative_ground
 	height = tentative_height

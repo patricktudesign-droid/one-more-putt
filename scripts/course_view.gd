@@ -11,10 +11,14 @@ const COL_WALL_TOP := Color("55794D")
 const COL_SAND := Color("EDD7AB")
 const COL_SAND_EDGE := Color("C6AD79")
 const COL_HOLE := Color("153C31")
+const COL_HOLE_RIM := Color("2E5B46")   # worn-turf lip around the cup
+const COL_HOLE_DEEP := Color("0A1D17")  # inner shadow, suggests depth
 const COL_FLAG_POLE := Color("FFF4DC")
 const COL_FLAG := Color("EF846C")
 const COL_BALL := Color("FFF8E8")
-const COL_BALL_SHADOW := Color("67814D")
+const COL_BALL_SHADE := Color("D8CFB8") # darker edge, cheap sphere shading
+const COL_BALL_HIGHLIGHT := Color("FFFFFF", 0.8)
+const COL_BALL_DIMPLE := Color("C9BFA6")
 const COL_AIM_LIGHT := Color("F6C6BD") # light red/pink: soft power
 const COL_AIM_DARK := Color("7A1810")  # dark red: full power
 const COL_TRAJECTORY := Color("7A1810", 0.45)
@@ -24,8 +28,13 @@ var level: Dictionary = {}
 var sim: BallSim
 var preview: Dictionary = {"active": false}
 
+# 1.0 = normal size, 0.0 = fully sunk. Animated by play_sink_animation().
+var sink_t: float = 1.0
+var _sink_tween: Tween
+
 func set_level(l: Dictionary) -> void:
 	level = l
+	sink_t = 1.0
 	queue_redraw()
 
 func set_sim(s: BallSim) -> void:
@@ -33,6 +42,21 @@ func set_sim(s: BallSim) -> void:
 
 func set_preview(p: Dictionary) -> void:
 	preview = p
+
+## Shrinks the ball into the cup over a short tween, for the completion
+## sequence. Call reset_sink() first if replaying the same hole in place.
+func play_sink_animation(duration: float = 0.4) -> void:
+	sink_t = 1.0
+	if _sink_tween:
+		_sink_tween.kill()
+	_sink_tween = create_tween()
+	_sink_tween.tween_property(self, "sink_t", 0.0, duration) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+
+func reset_sink() -> void:
+	if _sink_tween:
+		_sink_tween.kill()
+	sink_t = 1.0
 
 func _process(_delta: float) -> void:
 	queue_redraw()
@@ -66,7 +90,12 @@ func _draw_walls() -> void:
 
 func _draw_hole_and_flag() -> void:
 	var h: Vector2 = level.hole
+	# Recessed cup: a worn-turf rim, a dark bowl, and an inner shadow crescent
+	# offset toward the bottom-right (away from an implied top-left light),
+	# so it reads as a hole sunk into the green rather than a flat disc.
+	draw_circle(h, Constants.HOLE_CAPTURE_RADIUS + 2.5, COL_HOLE_RIM)
 	draw_circle(h, Constants.HOLE_CAPTURE_RADIUS, COL_HOLE)
+	draw_circle(h + Vector2(1.2, 1.2), Constants.HOLE_CAPTURE_RADIUS * 0.68, COL_HOLE_DEEP)
 	var pole_top: Vector2 = h + Vector2(0, -38)
 	draw_line(h, pole_top, COL_FLAG_POLE, 3.0, true)
 	var flag_pts := PackedVector2Array([
@@ -75,17 +104,40 @@ func _draw_hole_and_flag() -> void:
 	draw_colored_polygon(flag_pts, COL_FLAG)
 
 func _draw_ball() -> void:
+	if sink_t <= 0.001:
+		return # fully sunk — nothing left to draw
 	var p: Vector2 = sim.position
 	var h: float = sim.height
-	# Shadow stays on the ground; shrinks slightly with height.
-	var shadow_scale: float = clamp(1.0 - (h / Constants.CHIP_PEAK_HEIGHT) * 0.5, 0.5, 1.0)
+	var radius: float = Constants.BALL_RADIUS * sink_t
+
+	# Ground shadow: stays on the ground regardless of height, shrinks and
+	# fades the higher the ball is (a chip's own "how high am I" readout).
+	var height_t: float = clamp(h / Constants.CHIP_PEAK_HEIGHT, 0.0, 1.0)
+	var shadow_scale: float = lerp(1.0, 0.45, height_t) * sink_t
+	var shadow_alpha: float = lerp(0.28, 0.1, height_t)
 	draw_set_transform(p, 0.0, Vector2(shadow_scale, shadow_scale * 0.45))
-	draw_circle(Vector2.ZERO, Constants.BALL_RADIUS, Color(0, 0, 0, 0.22))
+	draw_circle(Vector2.ZERO, Constants.BALL_RADIUS, Color(0, 0, 0, shadow_alpha))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 	var visual_pos: Vector2 = p - Vector2(0, h * 0.6)
-	draw_circle(visual_pos, Constants.BALL_RADIUS, COL_BALL)
-	draw_arc(visual_pos, Constants.BALL_RADIUS, 0, TAU, 20, COL_BALL_SHADOW, 1.5, true)
+
+	# Cheap sphere shading: base fill, a soft darker edge toward the
+	# bottom-right, a crisp rim line, and a small fixed highlight toward the
+	# top-left (a stable implied light, independent of the ball's own spin).
+	draw_circle(visual_pos, radius, COL_BALL)
+	draw_circle(visual_pos + Vector2(radius, radius) * 0.22, radius * 0.88, COL_BALL_SHADE.lerp(COL_BALL, 0.6))
+	draw_arc(visual_pos, radius, 0, TAU, 20, COL_BALL_SHADE, 1.2, true)
+	draw_circle(visual_pos - Vector2(radius, radius) * 0.32, radius * 0.3, COL_BALL_HIGHLIGHT)
+
+	# Travel-driven rolling texture: a couple of dimples that spin with
+	# sim.rotation (arc length / radius), so a rolling ball visibly rolls
+	# instead of sliding — unlike the highlight above, these rotate.
+	if radius > 1.0:
+		draw_set_transform(visual_pos, sim.rotation, Vector2.ONE)
+		draw_circle(Vector2(radius * 0.4, 0), radius * 0.16, COL_BALL_DIMPLE)
+		draw_circle(Vector2(-radius * 0.2, radius * 0.45), radius * 0.13, COL_BALL_DIMPLE)
+		draw_circle(Vector2(-radius * 0.2, -radius * 0.45), radius * 0.13, COL_BALL_DIMPLE)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 func _draw_preview() -> void:
 	var mode: int = preview.mode

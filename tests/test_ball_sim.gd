@@ -28,6 +28,7 @@ func _init() -> void:
 	test_stress_many_runs_no_hang()
 	test_lip_out_curves_near_miss()
 	test_wall_collision_margin_catches_graze()
+	test_outer_wall_rebound_matrix()
 
 	print("")
 	print("%d checks, %d failures" % [checks, failures.size()])
@@ -184,6 +185,101 @@ func test_wall_collision_margin_catches_graze() -> void:
 			bounced = true
 			break
 	_check("wall collision margin catches a near-edge graze", bounced)
+
+## Regression for a 2026-11-10 playtest bug: the ball reached the right
+## outer boundary and froze instead of rebounding. Root cause was
+## `_outer_normal(position)` being evaluated on the pre-contact position
+## (which never satisfies its own threshold checks), silently falling
+## through to its Vector2.UP fallback — a horizontal-surface normal that
+## only flips Y velocity, leaving the real offending (X) component
+## untouched, so the ball kept re-colliding with itself every tick without
+## ever moving. Fixed by deriving the normal from `tentative` instead.
+##
+## This matrix heads off a regression by exercising all 4 outer edges,
+## head-on and shallow-angle approaches, at low/medium/high speed, plus a
+## corner, and asserts: it actually rebounds, is pushed back inward, moves
+## away afterward (not stuck), never penetrates the boundary, settles
+## cleanly (no endless jitter), and — for shallow angles — keeps its
+## along-the-wall (tangential) direction instead of having it flipped.
+func test_outer_wall_rebound_matrix() -> void:
+	# Clearance kept small (15u) and deliberately asymmetric per axis: large
+	# enough that even the lowest test speed still reaches the wall, small
+	# enough that a shallow tangential approach can't drift into an
+	# *adjacent* wall first (the course is 280x440, so centering on the
+	# cross-axis leaves ~120-220u of room either way — plenty next to a
+	# 15u approach distance).
+	var edges := [
+		{"name": "right", "inward": Vector2(-1, 0), "start": Vector2(290, 240)},
+		{"name": "left", "inward": Vector2(1, 0), "start": Vector2(30, 240)},
+		{"name": "top", "inward": Vector2(0, 1), "start": Vector2(160, 30)},
+		{"name": "bottom", "inward": Vector2(0, -1), "start": Vector2(160, 450)},
+	]
+	var speeds := {"low": 150.0, "medium": 400.0, "high": 650.0}
+	for edge in edges:
+		var outward: Vector2 = -edge.inward
+		var tangent: Vector2 = Vector2(-edge.inward.y, edge.inward.x)
+		for speed_name in speeds.keys():
+			_check_outer_bounce("%s head-on, %s speed" % [edge.name, speed_name], \
+				edge.start, outward, speeds[speed_name], edge.inward, false)
+		var shallow_dir: Vector2 = (outward * 0.35 + tangent * 0.9).normalized()
+		for speed_name in speeds.keys():
+			_check_outer_bounce("%s shallow-angle, %s speed" % [edge.name, speed_name], \
+				edge.start, shallow_dir, speeds[speed_name], edge.inward, true)
+	_check_outer_corner()
+
+func _check_outer_bounce(label: String, start: Vector2, direction: Vector2, speed: float, inward_axis: Vector2, is_shallow: bool) -> void:
+	var sim := BallSim.new()
+	sim.setup(LevelData.holes()[0]) # no internal walls: isolates outer-bounds behaviour
+	sim.position = start
+	sim.shoot_putt(direction, speed)
+
+	var tangent: Vector2 = Vector2(-inward_axis.y, inward_axis.x)
+	var bounced := false
+	var vel_at_bounce := Vector2.ZERO
+	var pos_at_bounce: Vector2 = start
+	var moved_away := false
+	var leaked := false
+
+	for i in range(900):
+		var events: Dictionary = sim.step(1.0 / 60.0)
+		if sim._outer_blocked(sim.position):
+			leaked = true
+		if events.bounced and not bounced:
+			bounced = true
+			vel_at_bounce = sim.velocity
+			pos_at_bounce = sim.position
+		if bounced and not moved_away and sim.position.distance_to(pos_at_bounce) > 0.05:
+			moved_away = true
+		if sim.state == BallSim.State.RESTING:
+			break
+
+	_check("%s: rebounds" % label, bounced)
+	_check("%s: pushed back inward" % label, bounced and vel_at_bounce.dot(inward_axis) > 0.0)
+	_check("%s: not stuck (moves away after rebound)" % label, moved_away)
+	_check("%s: never penetrates the boundary" % label, not leaked)
+	_check("%s: settles cleanly (no endless jitter)" % label, sim.state == BallSim.State.RESTING)
+	if is_shallow:
+		var tangent_sign_ok: bool = bounced and sign(vel_at_bounce.dot(tangent)) == sign(direction.dot(tangent))
+		_check("%s: along-the-wall motion preserved" % label, tangent_sign_ok)
+
+func _check_outer_corner() -> void:
+	var sim := BallSim.new()
+	sim.setup(LevelData.holes()[0])
+	sim.position = Vector2(250, 390) # approaching the bottom-right corner
+	sim.shoot_putt(Vector2(1, 1).normalized(), 500.0)
+	var bounced := false
+	var leaked := false
+	for i in range(900):
+		var events: Dictionary = sim.step(1.0 / 60.0)
+		if sim._outer_blocked(sim.position):
+			leaked = true
+		if events.bounced:
+			bounced = true
+		if sim.state == BallSim.State.RESTING:
+			break
+	_check("corner: rebounds without sticking", bounced)
+	_check("corner: never penetrates the boundary", not leaked)
+	_check("corner: settles cleanly", sim.state == BallSim.State.RESTING)
 
 func test_stress_many_runs_no_hang() -> void:
 	var rng := RandomNumberGenerator.new()
