@@ -106,6 +106,82 @@ shot on hole 2 in the actual running game (not just the isolated
 simulation) and confirmed visually that the ball now rebounds well clear
 of the wall instead of sticking.
 
+## Visual pass against the HTML reference prototype (2026-11-13)
+
+Separate commit from the physics pass above, per request, so the two can
+be reviewed independently. `course_view.gd` carries a header comment with
+the same summary; this is the fuller version.
+
+- **Course frame**: replaced the flat two-rect frame (dark border + green
+  fill) with a 4-layer stack — a shadow layer, a mid-tone layer, a lighter
+  inner-border layer (each inset a little more than the last, so a thin
+  band of the darker layer shows around every edge), then the turf. This
+  is a simplified, symmetric stand-in for the reference's raised-edge
+  look (its margins are asymmetric per side; ours are uniform, since our
+  `PLAY_BOUNDS` is itself a simple symmetric 20px inset — matching the
+  reference's exact asymmetry wasn't worth the complexity for the same
+  visual effect). **Caught and fixed a bug before shipping**: my first
+  attempt computed the layer rects from a "course centre minus half-size"
+  formula using offset constants that didn't actually match each rect's
+  own size, producing a badly misaligned frame (one layer's bottom edge
+  sat *below* the visible course). Rewrote as a plain `_inset_rect(margin)`
+  helper and re-screenshotted to confirm the bands actually nest
+  correctly before moving on.
+- **Turf**: a 14-band vertical gradient (light to dark, top to bottom)
+  approximating the reference's `createLinearGradient`, plus a scattered
+  grain texture (260 points, precomputed once in `_ready()` — generating
+  them inside `_draw()` would reroll different points every frame and
+  look like flickering static, not texture).
+- **Sand**: the existing two-tone fill gained the reference's offset
+  shadow base and a speckle texture (60 points from the same precomputed
+  set).
+- **Walls**: added a thin highlight strip along the top edge (the
+  reference's "catches the light" line), on top of the existing two-tone
+  base/top.
+- **Cup**: re-oriented the inner shadow to sit directly below centre
+  (implying an overhead light) rather than offset to the bottom-right,
+  and brightened the outer rim to a lighter catch-light tone — closer to
+  the reference's vertical top-to-bottom gradient bowl than last round's
+  diagonal-light version, without needing true per-pixel gradient support
+  (which Godot's immediate-mode 2D drawing doesn't have).
+- **Ball shading**: switched from a single offset "shade" circle to a
+  3-circle stack (edge-tone base, then two progressively smaller, brighter
+  circles centred toward an implied top-left light) — a closer approximation
+  of the reference's actual `createRadialGradient`, which Godot has no
+  built-in equivalent for in this drawing mode.
+- **Rolling dimples**: reworked from "3 fixed dots that rotate in place"
+  to the reference's actual technique — dimples swept by the spin phase
+  (`sin(rotation + i*0.91)`) and gated to the near hemisphere via
+  `cos(phase) > 0` (so they fade in/out as the ball spins, not just slide
+  around), oriented along the direction of travel (new `BallSim.heading`
+  field — see below) rather than a fixed frame. Bumped size/opacity after
+  the first screenshot pass showed them too faint to read at the ball's
+  actual on-screen size (a zoomed-in test crop had made them look more
+  visible than they'd actually be during normal play).
+- **Sink animation**: now also drifts the ball's position toward the cup
+  centre and settles it slightly deeper as it shrinks (previously it only
+  shrank in place) — matches the reference's sink sequence, which
+  interpolates position toward the hole and adds a small extra downward
+  offset as the ball disappears.
+- **`BallSim.heading`**: new field (direction of last actual movement,
+  radians), held steady once the ball stops rather than reset to zero —
+  mirrors the reference's `ball.heading` and lets the dimple sweep orient
+  along the direction of travel. Added to `snapshot()`/`restore()`, along
+  with `rotation` — a pre-existing gap from the previous round (rotation
+  was tracked but never round-tripped through undo), fixed while touching
+  this code anyway since leaving it would make an undo's ball spin look
+  like it jumped.
+- Star icons (results screen) and the recessed-cup-plus-sink-animation
+  structure itself were already done in the previous round and didn't
+  need rework here, just the cup's shading tweak above.
+
+Verified by re-running the full suite (purely visual, so no logic should
+have moved — confirmed 164 unit + 25 e2e checks still pass) and by
+screenshotting hole 1 (frame/turf/cup/ball), hole 2 (wall highlight),
+hole 5 (sand speckle+shadow), and a mid-roll frame (to confirm dimples
+are visible and swept by `heading`/`rotation` in motion, not just
+static).
+
 ## Physics pass against the HTML reference prototype (2026-11-13)
 
 User supplied `preview.html`, a from-scratch HTML/Canvas prototype of the

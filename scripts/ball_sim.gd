@@ -33,6 +33,11 @@ var completed: bool = false
 # (arc length / radius, as if rolling without slipping), so the view layer
 # can draw a visibly rotating ball instead of a sliding disc.
 var rotation: float = 0.0
+# Direction of the last actual movement (radians), held steady once the
+# ball stops rather than reset to 0 — lets the view layer orient a
+# rolling-texture pattern (dimples) along the direction of travel, the
+# way the HTML reference's ball.heading does.
+var heading: float = 0.0
 
 # Chip flight bookkeeping
 var flight_t: float = 0.0
@@ -60,6 +65,7 @@ func reset() -> void:
 	completed = false
 	flight_t = 0.0
 	rotation = 0.0
+	heading = 0.0
 
 func can_shoot() -> bool:
 	return state == State.RESTING and not completed
@@ -266,6 +272,7 @@ func _step_rolling(delta: float, events: Dictionary) -> void:
 			events.bounced = true
 		else:
 			rotation += step_dist / Constants.BALL_RADIUS
+			heading = dir.angle()
 			position = tentative
 
 		# Rolling resistance: base + k*speed on green (real friction and
@@ -307,7 +314,10 @@ func _step_flight(delta: float, events: Dictionary) -> void:
 		_resolve_landing(flight_target, events)
 		return
 
-	rotation += position.distance_to(tentative_ground) / Constants.BALL_RADIUS
+	var flight_delta: Vector2 = tentative_ground - position
+	rotation += flight_delta.length() / Constants.BALL_RADIUS
+	if flight_delta.length_squared() > 0.0001:
+		heading = flight_delta.angle()
 	flight_t = tentative_t
 	position = tentative_ground
 	height = tentative_height
@@ -365,6 +375,8 @@ func snapshot() -> Dictionary:
 		"rest_timer": rest_timer,
 		"strokes": strokes,
 		"completed": completed,
+		"rotation": rotation,
+		"heading": heading,
 	}
 
 func restore(snap: Dictionary) -> void:
@@ -374,6 +386,8 @@ func restore(snap: Dictionary) -> void:
 	state = snap.state
 	mode = snap.mode
 	in_sand = snap.in_sand
+	rotation = snap.get("rotation", rotation)
+	heading = snap.get("heading", heading)
 	rest_timer = snap.rest_timer
 	strokes = snap.strokes
 	completed = snap.completed
