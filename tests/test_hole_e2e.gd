@@ -18,6 +18,25 @@ func _check(name: String, cond: bool) -> void:
 	else:
 		print("ok:   ", name)
 
+## Same closed-form calibration as test_ball_sim.gd's — see that file for
+## the derivation. Duplicated rather than shared since each test file here
+## is a standalone SceneTree script.
+static func _closed_form_putt_distance(v0: float) -> float:
+	var base: float = Constants.PUTT_RESISTANCE_BASE
+	var k: float = Constants.PUTT_RESISTANCE_K
+	return v0 / k - (base / (k * k)) * log(1.0 + k * v0 / base)
+
+static func _calibrate_putt_speed(target_dist: float) -> float:
+	var lo := 0.0
+	var hi := Constants.PUTT_MAX_SPEED
+	for i in range(60):
+		var mid: float = (lo + hi) * 0.5
+		if _closed_form_putt_distance(mid) < target_dist:
+			lo = mid
+		else:
+			hi = mid
+	return (lo + hi) * 0.5
+
 func _init() -> void:
 	var scene: PackedScene = load("res://scenes/Main.tscn")
 	var main: Node = scene.instantiate()
@@ -92,7 +111,7 @@ func _check_full_completion(main: Node) -> void:
 	# Dead-straight putt, drag length calibrated so the natural stopping
 	# distance lands exactly on the hole (same maths as the BallSim unit test).
 	var dist: float = hole.sim.position.distance_to(hole.sim.hole_pos)
-	var v0: float = sqrt(2.0 * Constants.PUTT_DECEL * dist)
+	var v0: float = _calibrate_putt_speed(dist)
 	var drag_len: float = (v0 / Constants.PUTT_MAX_SPEED) * Constants.MAX_DRAG_PIXELS
 	var ball_screen: Vector2 = hole.course_root.to_global(hole.sim.position)
 	# drag_len is in course-local units; convert to screen pixels via the

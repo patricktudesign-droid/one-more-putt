@@ -106,6 +106,138 @@ shot on hole 2 in the actual running game (not just the isolated
 simulation) and confirmed visually that the ball now rebounds well clear
 of the wall instead of sticking.
 
+## Physics pass against the HTML reference prototype (2026-11-13)
+
+User supplied `preview.html`, a from-scratch HTML/Canvas prototype of the
+same game, as the gameplay/visual reference, and asked for three specific
+comparison shots to match: a gentle straight putt, a glancing wall
+rebound, and a bunker chip. This section covers the physics side only —
+see "Visual polish" below for the art-reference pass, done as a separate
+commit per request.
+
+### Translation scale (judgment call — flagged, not asserted as correct)
+
+The reference's canvas/course (360x490, green 316x431) is not a uniform
+rescale of ours (320x480, green 280x440) — the aspect ratios differ
+(0.733 vs 0.636), so there is no single exact conversion factor between
+the two. I translated distances/speeds using the play-area **height**
+ratio, `S = 440/431 = 1.02088`, since the two shots that matter most for
+this pass (a vertical straight putt, and a wall hit roughly a third of
+the way down the course) both run mostly along that axis. Time durations
+and dimensionless ratios are left unscaled (see the comment block at the
+top of `constants.gd` for the full reasoning). The alternative — scaling
+by the ball-radius ratio (8/7 = 1.143, since their ball radius is 7 and
+ours is 8) — would have pushed `PUTT_MAX_SPEED` to ~749 instead of
+leaving it at 650. **This choice of scale axis is the single biggest
+judgment call in this pass** — if the three comparison shots don't feel
+right side by side, this is the first thing to revisit.
+
+### What actually changed (`constants.gd`, `ball_sim.gd`)
+
+1. **Rolling resistance is now speed-dependent** (`PUTT_RESISTANCE_BASE`
+   276 + `PUTT_RESISTANCE_K` 0.32 × current speed), replacing the flat
+   `PUTT_DECEL` (380). This is a structural port, not just a retuned
+   number — real friction + rolling resistance combine this way in the
+   reference. Net effect: a soft putt now decelerates *more gently* at
+   low speed than before (base 276 < old flat 380) but a hard putt
+   decelerates *harder* right after release (base + k×650 ≈ 484) before
+   tapering off. Recomputed every physics substep, not once per tick,
+   since it depends on current speed.
+2. **Wall-bounce formula fixed to only damp the normal component.** The
+   previous code did `velocity.bounce(n) * WALL_RESTITUTION`, which
+   scales the *entire* resulting vector (including the preserved
+   tangential/along-the-wall component) by the restitution factor — so
+   every bounce bled off some of the ball's sliding speed even on a pure
+   graze. The reference's `rebound()` only modifies the into-the-wall
+   component: `v -= (1+e) * (v·n) * n`. Switched to that formula exactly.
+   This is the fix for "a glancing hit should keep most of its movement
+   along the wall" — confirmed by reverting it and watching the new
+   regression test fail (below), then restoring it and watching it pass.
+3. **Sand (while putting) resistance**: flat 1695 (was `PUTT_DECEL * 4` =
+   1520 under the old model), since the reference's sand resistance is
+   itself flat, not speed-dependent — kept as a flat constant.
+4. **Wall restitution**: 0.82 → 0.80 (reference uses 0.78 internal / 0.80
+   outer; one shared constant, picked the outer value since that's what
+   the comparison shot targets).
+5. **Rest threshold**: speed threshold 5 → 3 (translated), dwell time
+   0.2s → 0 (reference stops the instant speed crosses the threshold,
+   no dwell at all; ours added a dwell last round that the reference
+   doesn't have and doesn't need).
+6. **Chip**: max range 180 → 206, peak height 60 → 45, flight duration
+   0.7s → 0.68s (all translated from the reference's 202/44/0.68). Low-
+   wall clearance for a chip in flight dropped the "+ ball radius" padding
+   we'd added — the reference's clearance check is just `height > wall
+   height`, no radius margin.
+7. **Landing-roll fraction**: 0.10 → 0.29 (reference keeps 29% of the
+   ball's actual speed at touchdown). **Judgment call, not a clean
+   port**: the reference's chip is velocity-integrated throughout flight
+   (real vx/vy under gravity-like z, no fixed target), so "speed at
+   touchdown" is a real, measured quantity there. Ours is parametric — a
+   lerp to a precomputed landing target over a fixed duration — chosen
+   originally so the aim preview can show an exact landing spot. There is
+   no real "impact velocity" in that model to port directly, so I kept
+   our existing "equivalent putt speed" stand-in (already flagged as an
+   assumption earlier in this log) and only changed the fraction applied
+   to it. If the chip's landing roll doesn't feel like the reference's,
+   this architecture difference is why, and reconciling it properly would
+   mean switching the chip to velocity integration — a design change
+   beyond "translate the values," flagging for your call.
+8. **Max drag distance**: 120 → 100 course-units, derived from the
+   reference's maxDrag (113px) as a *fraction of course width* (31.4%)
+   rather than translated as an absolute distance, since it's a UI
+   gesture mapping, not a world-physics quantity.
+9. **Aim-start touch tolerance**: checked (27 theirs → 27.6 translated) —
+   already matched by our existing 28, no change made.
+10. **Max putt speed**: checked (655 theirs → ~669 translated) — within
+    3% of our existing 650, left unchanged rather than chasing a
+    difference that small.
+
+### Checks actually run
+
+- Full existing suite (161 unit + 25 e2e checks) re-run after every
+  constant/formula change — all still pass. The existing outer-wall
+  rebound matrix (36 cases) doesn't assume any particular resistance
+  model, so it kept validating the collision geometry/direction
+  correctly through this pass without modification.
+- Two **new** regression tests added for the two structural changes:
+  - `test_tangential_velocity_preserved_exactly`: a shallow-angle hit's
+    along-the-wall speed must be within 5% of its pre-bounce value (not
+    just same-sign, which the matrix already checked — this checks
+    *magnitude*). Verified non-vacuous: reverted the bounce formula,
+    confirmed this test (and only this test) fails, restored the fix,
+    confirmed it passes again.
+  - `test_resistance_is_speed_dependent`: measures instantaneous
+    deceleration early in a hard putt (high speed) vs. late in the same
+    putt (low speed, near rest) and asserts the first is measurably
+    larger — confirms the base+k×speed model is actually active, not a
+    flat rate in disguise.
+  - Both existing closed-form putt-speed calibrations (unit + e2e tests,
+    used to land a putt exactly on the hole for the capture tests) had to
+    be replaced: the old `sqrt(2·decel·distance)` shortcut assumed
+    constant deceleration, which no longer holds. Derived the exact
+    closed-form stopping distance for the new `dv/dt = -(base+k·v)`
+    model (`distance(v0) = v0/k - (base/k²)·ln(1+k·v0/base)`) and
+    calibrate by bisecting on it instead.
+- Stability: re-ran the e2e suite 3 times in a row after the full change
+  set — no flakiness.
+
+### What still needs your judgement
+
+- **Whether the translation scale choice (play-height ratio vs. ball-
+  radius ratio) is the right one.** I picked the one that keeps
+  `PUTT_MAX_SPEED` close to where it already was; the other choice would
+  have scaled nearly everything up ~14%.
+- **The chip landing-roll architecture gap** (item 7 above) — I ported
+  the *value* (29%) onto our existing stand-in rather than restructuring
+  the chip to match the reference's velocity-integrated flight. If the
+  chip roll-out still doesn't feel like the reference after this, that
+  architecture difference is the likely reason, not a wrong constant.
+- **Overall feel**, inherently — I can verify direction, magnitude,
+  non-penetration and settling behavior mechanically (and did), but "does
+  the gentle putt feel like the reference's gentle putt" is a judgment
+  call only playing it side by side can answer. See the comparison-shot
+  instructions below for exactly what to try.
+
 ## Rolling deceleration / stopping-threshold check (2026-11-10)
 
 Per the request to re-tune these only after collisions were confirmed

@@ -230,9 +230,6 @@ func _step_rolling(delta: float, events: Dictionary) -> void:
 		state = State.RESTING
 		mode = Mode.CHIP if in_sand else Mode.PUTT
 		return
-	var decel: float = Constants.PUTT_DECEL
-	if in_sand:
-		decel = Constants.PUTT_DECEL * Constants.SAND_PUTT_DECEL_MULT
 	var dir: Vector2 = velocity.normalized()
 
 	var remaining: float = speed * delta
@@ -257,13 +254,27 @@ func _step_rolling(delta: float, events: Dictionary) -> void:
 					break
 
 		if hit_normal != Vector2.ZERO:
-			velocity = velocity.bounce(hit_normal) * Constants.WALL_RESTITUTION
+			# Partial-restitution impulse along the normal only: damps the
+			# into-the-wall component by (1+e), leaves the along-the-wall
+			# (tangential) component untouched. velocity.bounce(n)*e (the
+			# previous approach) scales the *entire* vector by e, which
+			# bleeds off tangential speed on every bounce — wrong for a
+			# glancing hit, which should keep sliding along the wall.
+			var impact_speed: float = velocity.dot(hit_normal)
+			if impact_speed < 0.0:
+				velocity -= (1.0 + Constants.WALL_RESTITUTION) * impact_speed * hit_normal
 			events.bounced = true
 		else:
 			rotation += step_dist / Constants.BALL_RADIUS
 			position = tentative
 
-		# Constant (non frame-dependent) linear deceleration, applied per substep.
+		# Rolling resistance: base + k*speed on green (real friction and
+		# rolling resistance combine this way — gentler at low speed,
+		# stronger at high speed, versus a flat per-tick deceleration),
+		# flat on sand. Recomputed every substep since it depends on the
+		# ball's current speed, which changes across substeps.
+		var decel: float = Constants.SAND_PUTT_RESISTANCE if in_sand \
+			else Constants.PUTT_RESISTANCE_BASE + Constants.PUTT_RESISTANCE_K * velocity.length()
 		var new_speed: float = max(0.0, velocity.length() - decel * sub_dt)
 		if velocity.length() > 0.0:
 			velocity = velocity.normalized() * new_speed
@@ -277,7 +288,9 @@ func _step_flight(delta: float, events: Dictionary) -> void:
 	var tentative_ground: Vector2 = flight_start.lerp(flight_target, clamped_t)
 	var tentative_height: float = 4.0 * Constants.CHIP_PEAK_HEIGHT * clamped_t * (1.0 - clamped_t)
 
-	var clearance_ok: bool = tentative_height > (Constants.LOW_WALL_HEIGHT + Constants.BALL_RADIUS)
+	# Reference clears a low wall once height exceeds the wall's own height,
+	# no extra radius padding (ball.z<17 is its whole clearance check).
+	var clearance_ok: bool = tentative_height > Constants.LOW_WALL_HEIGHT
 	var obstructed: bool = _outer_blocked(tentative_ground)
 	if not obstructed and not clearance_ok:
 		for w in walls:

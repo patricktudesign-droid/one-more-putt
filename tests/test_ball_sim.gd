@@ -17,6 +17,29 @@ func _check(name: String, cond: bool) -> void:
 	else:
 		print("ok:   ", name)
 
+## Closed-form stopping distance for the base+k*speed resistance model
+## (dv/dt = -(base + k*v)), solved analytically: integrating v(t) from 0
+## to the time it reaches zero gives
+##   distance(v0) = v0/k - (base/k^2) * ln(1 + k*v0/base)
+## Used to calibrate a putt speed whose natural stopping point lands at a
+## known distance, without assuming the old flat-deceleration model (whose
+## sqrt(2*decel*dist) shortcut no longer applies).
+static func _closed_form_putt_distance(v0: float) -> float:
+	var base: float = Constants.PUTT_RESISTANCE_BASE
+	var k: float = Constants.PUTT_RESISTANCE_K
+	return v0 / k - (base / (k * k)) * log(1.0 + k * v0 / base)
+
+static func _calibrate_putt_speed(target_dist: float) -> float:
+	var lo := 0.0
+	var hi := Constants.PUTT_MAX_SPEED
+	for i in range(60):
+		var mid: float = (lo + hi) * 0.5
+		if _closed_form_putt_distance(mid) < target_dist:
+			lo = mid
+		else:
+			hi = mid
+	return (lo + hi) * 0.5
+
 func _init() -> void:
 	test_stroke_counting()
 	test_undo_restoration()
@@ -29,6 +52,8 @@ func _init() -> void:
 	test_lip_out_curves_near_miss()
 	test_wall_collision_margin_catches_graze()
 	test_outer_wall_rebound_matrix()
+	test_tangential_velocity_preserved_exactly()
+	test_resistance_is_speed_dependent()
 
 	print("")
 	print("%d checks, %d failures" % [checks, failures.size()])
@@ -74,9 +99,9 @@ func test_undo_restoration() -> void:
 func test_terminal_hole_capture() -> void:
 	var sim := BallSim.new()
 	sim.setup(LevelData.holes()[0]) # straight 300-unit putt, no hazards
-	# v0 chosen so the putt's natural stopping distance (v0^2 / (2*decel)) lands
-	# right on the hole, 300 units away.
-	var v0 := sqrt(2.0 * Constants.PUTT_DECEL * sim.position.distance_to(sim.hole_pos))
+	# v0 chosen so the putt's natural stopping distance lands right on the
+	# hole, 300 units away (closed-form for the base+k*speed model).
+	var v0 := _calibrate_putt_speed(sim.position.distance_to(sim.hole_pos))
 	sim.shoot_putt((sim.hole_pos - sim.position).normalized(), v0)
 	var completed_at_tick := -1
 	for i in range(600):
@@ -185,6 +210,66 @@ func test_wall_collision_margin_catches_graze() -> void:
 			bounced = true
 			break
 	_check("wall collision margin catches a near-edge graze", bounced)
+
+## Regression for the 2026-11-13 physics pass: a glancing hit must keep
+## its along-the-wall speed, not just its sign. The old formula
+## (velocity.bounce(n) * restitution) scaled the *entire* post-bounce
+## vector by restitution, bleeding off tangential speed on every hit. The
+## fix only damps the into-the-wall component — tangential speed should
+## come out of a single bounce essentially unchanged (allowing for the
+## small energy the substep's friction term removes over that one tick).
+func test_tangential_velocity_preserved_exactly() -> void:
+	var sim := BallSim.new()
+	sim.setup(LevelData.holes()[0]) # no internal walls, isolates outer-bounds behaviour
+	# Graze the right wall at a shallow angle: mostly moving up (tangential),
+	# barely drifting right (into the wall).
+	sim.position = Vector2(290, 240)
+	var dir := Vector2(0.15, -0.99).normalized()
+	sim.shoot_putt(dir, 400.0)
+	var tangent := Vector2(0, -1) # along the wall, independent of hit direction
+	var tangential_before: float = sim.velocity.dot(tangent)
+	var tangential_after: float = tangential_before
+	var bounced := false
+	for i in range(900):
+		# Sample just before stepping: by the time it reaches the wall the
+		# ball has already decayed some speed en route under resistance, so
+		# the pre-bounce tangential speed isn't the launch value — it's
+		# whatever it decayed to right up to this tick.
+		var pre_tangential: float = sim.velocity.dot(tangent)
+		var events: Dictionary = sim.step(1.0 / 60.0)
+		if events.bounced and not bounced:
+			bounced = true
+			tangential_before = pre_tangential
+			tangential_after = sim.velocity.dot(tangent)
+			break
+	_check("shallow hit actually bounces", bounced)
+	# Within a few percent: one substep's worth of rolling resistance is the
+	# only thing allowed to touch it, nothing wall-related should.
+	_check("tangential speed preserved within 5%% of its pre-bounce value", \
+		bounced and abs(tangential_after - tangential_before) / tangential_before < 0.05)
+
+## Regression check that the new rolling-resistance model is genuinely
+## speed-dependent (base + k*speed), not a flat rate in disguise: the
+## instantaneous deceleration early in a hard putt (high speed) must be
+## measurably larger than late in the same putt (low speed, near rest).
+func test_resistance_is_speed_dependent() -> void:
+	var sim := BallSim.new()
+	sim.setup(LevelData.holes()[0])
+	sim.shoot_putt(Vector2(0, -1), Constants.PUTT_MAX_SPEED)
+	var dt := 1.0 / 60.0
+	var speed_before: float = sim.velocity.length()
+	sim.step(dt)
+	var decel_at_high_speed: float = (speed_before - sim.velocity.length()) / dt
+
+	# Run it down to a low (but still rolling) speed, then measure again.
+	while sim.velocity.length() > 40.0 and sim.state == BallSim.State.ROLLING:
+		sim.step(dt)
+	speed_before = sim.velocity.length()
+	sim.step(dt)
+	var decel_at_low_speed: float = (speed_before - sim.velocity.length()) / dt
+
+	_check("deceleration is measurably higher at high speed than low speed", \
+		decel_at_high_speed > decel_at_low_speed * 1.3)
 
 ## Regression for a 2026-11-10 playtest bug: the ball reached the right
 ## outer boundary and froze instead of rebounding. Root cause was
